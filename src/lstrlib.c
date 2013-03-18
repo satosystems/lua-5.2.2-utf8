@@ -19,6 +19,9 @@
 #include "lauxlib.h"
 #include "lualib.h"
 
+#ifdef UTF8
+#include "utf8.h"
+#endif
 
 /*
 ** maximum number of captures that a pattern can do during
@@ -33,10 +36,43 @@
 #define uchar(c)	((unsigned char)(c))
 
 
+#ifdef UTF8
+/*
+** Calcurate length of UTF-8 string.
+** Parameter `str' is a pointer of raw string.
+** Parameter `len' is a length of raw string.
+** Parameter `result' is a output length of calcurated UTF-8 string.
+*/
+#define UTF8_STR_LEN(str, len, result) \
+  { \
+    int i, n; \
+    for (i = 0, n = 0; i < len; n++) \
+      i += UTF8_CHAR_LENGTH(str[i]); \
+    result = n; \
+  }
+
+/*
+** Calcurate length of UTF-8 string.
+** Parameter `str' is a pointer of raw string.
+** Parameter `len' is a length of raw string.
+** Parameter `result' is a output length of calcurated UTF-8 string.
+** This function returns the length of calcurated UTF-8 string
+*/
+int utf8_str_len(const char *str, size_t len) {
+  int result;
+  UTF8_STR_LEN(str, len, result);
+  return result;
+}
+#endif
 
 static int str_len (lua_State *L) {
   size_t l;
+#ifdef UTF8
+  const char *s = luaL_checklstring(L, 1, &l);
+  UTF8_STR_LEN(s, l, l); /* update byte length to character length */
+#else
   luaL_checklstring(L, 1, &l);
+#endif
   lua_pushinteger(L, (lua_Integer)l);
   return 1;
 }
@@ -53,12 +89,37 @@ static size_t posrelat (ptrdiff_t pos, size_t len) {
 static int str_sub (lua_State *L) {
   size_t l;
   const char *s = luaL_checklstring(L, 1, &l);
+#ifdef UTF8
+  size_t start;
+  size_t end;
+  UTF8_STR_LEN(s, l, l); /* update byte length to character length */
+  start = posrelat(luaL_checkinteger(L, 2), l);
+  end = posrelat(luaL_optinteger(L, 3, -1), l);
+#else
   size_t start = posrelat(luaL_checkinteger(L, 2), l);
   size_t end = posrelat(luaL_optinteger(L, 3, -1), l);
+#endif
   if (start < 1) start = 1;
   if (end > l) end = l;
+#ifdef UTF8
+  if (start <= end) {
+    int i, pos, st, ed;
+    for (i = 1, pos = 0, st = 0; i < start; i++) {
+      int len = UTF8_CHAR_LENGTH(s[pos]);
+      st += len;
+      pos += len;
+    }
+    for (ed = st; i < end; i++) {
+      int len = UTF8_CHAR_LENGTH(s[pos]);
+      ed += len;
+      pos += len;
+    }
+    lua_pushlstring(L, s + st, ed - st + UTF8_CHAR_LENGTH(s[st]));
+  }
+#else
   if (start <= end)
     lua_pushlstring(L, s + start - 1, end - start + 1);
+#endif
   else lua_pushliteral(L, "");
   return 1;
 }
@@ -69,8 +130,33 @@ static int str_reverse (lua_State *L) {
   luaL_Buffer b;
   const char *s = luaL_checklstring(L, 1, &l);
   char *p = luaL_buffinitsize(L, &b, l);
+#ifdef UTF8
+  int j;
+#endif
   for (i = 0; i < l; i++)
     p[i] = s[l - i - 1];
+#ifdef UTF8
+  for (j = l - 1; j >= 0;) {
+    int len = UTF8_CHAR_LENGTH(p[j]);
+    if (len == 2) {
+      char c = p[j];
+      p[j] = p[j - 1];
+      p[j - 1] = c;
+    } else if (len == 3) {
+      char c = p[j];
+      p[j] = p[j - 2];
+      p[j - 2] = c;
+    } else if (len == 4) {
+      char c = p[j];
+      p[j] = p[j - 3];
+      p[j - 3] = c;
+      c = p[j - 1];
+      p[j - 1] = p[j - 2];
+      p[j - 2] = c;
+    }
+    j -= len;
+  }
+#endif
   luaL_pushresultsize(&b, l);
   return 1;
 }
@@ -133,23 +219,68 @@ static int str_rep (lua_State *L) {
 static int str_byte (lua_State *L) {
   size_t l;
   const char *s = luaL_checklstring(L, 1, &l);
+#ifdef UTF8
+  size_t posi;
+  size_t pose;
+  int n, i;
+  int off;
+  UTF8_STR_LEN(s, l, l); /* update byte length to character length */
+  posi = posrelat(luaL_optinteger(L, 2, 1), l);
+  pose = posrelat(luaL_optinteger(L, 3, posi), l);
+#else
   size_t posi = posrelat(luaL_optinteger(L, 2, 1), l);
   size_t pose = posrelat(luaL_optinteger(L, 3, posi), l);
   int n, i;
+#endif
   if (posi < 1) posi = 1;
   if (pose > l) pose = l;
   if (posi > pose) return 0;  /* empty interval; return no values */
-  n = (int)(pose -  posi + 1);
+  n = (int)(pose -  posi + 1); /* `n' is character length, not byte length */
   if (posi + n <= pose)  /* (size_t -> int) overflow? */
     return luaL_error(L, "string slice too long");
   luaL_checkstack(L, n, "string slice too long");
+#ifdef UTF8
+  /* count byte length until `posi' */
+  off = 0;
+  for (i=1; i<posi; i++) {
+    off += UTF8_CHAR_LENGTH(s[off]);
+  }
+  /* push to stack of every UTF-8 code after `posi' */
+  for (i=0; i<n; i++) {
+    int len = UTF8_CHAR_LENGTH(s[off]);
+    int code = UTF8_DECODE(s+off, len);
+    lua_pushinteger(L, code);
+    off += len;
+  }
+#else
   for (i=0; i<n; i++)
     lua_pushinteger(L, uchar(s[posi+i-1]));
+#endif
   return n;
 }
 
 
 static int str_char (lua_State *L) {
+#ifdef UTF8
+  int n = lua_gettop(L);  /* number of arguments */
+  int i;
+  int sz = 0;
+  luaL_Buffer b;
+  char *p;
+  for (i=1; i<=n; i++) {
+    int c = luaL_checkint(L, i);
+    sz += UTF8_CODE_LENGTH(c);
+  }
+  p = luaL_buffinitsize(L, &b, sz);
+  for (i=1; i<=n; i++) {
+    int c = luaL_checkint(L, i);
+    int len = UTF8_CODE_LENGTH(c);
+    UTF8_ENCODE(c, len, p);
+    p += len;
+  }
+  luaL_pushresultsize(&b, sz);
+  return 1;
+#else
   int n = lua_gettop(L);  /* number of arguments */
   int i;
   luaL_Buffer b;
@@ -161,6 +292,7 @@ static int str_char (lua_State *L) {
   }
   luaL_pushresultsize(&b, n);
   return 1;
+#endif
 }
 
 
@@ -228,21 +360,43 @@ static int capture_to_close (MatchState *ms) {
 
 
 static const char *classend (MatchState *ms, const char *p) {
+#ifdef UTF8
+  const char *prev;
+  int len1 = UTF8_CHAR_LENGTH(*p); /* prev char length */
+  int len2; /* current char length */
+  switch (prev = p, p += len1, len2 = UTF8_CHAR_LENGTH(*p), *prev) {
+#else
   switch (*p++) {
+#endif
     case L_ESC: {
       if (p == ms->p_end)
         luaL_error(ms->L, "malformed pattern (ends with " LUA_QL("%%") ")");
+#ifdef UTF8
+      return p+len2;
+#else
       return p+1;
+#endif
     }
     case '[': {
       if (*p == '^') p++;
       do {  /* look for a `]' */
         if (p == ms->p_end)
           luaL_error(ms->L, "malformed pattern (missing " LUA_QL("]") ")");
+#ifdef UTF8
+#define NEXT (prev = p, len1 = len2, p += len2, len2 = UTF8_CHAR_LENGTH(*p))
+        if (NEXT, *prev == L_ESC && p < ms->p_end)
+          NEXT;  /* skip escapes (e.g. `%]') */
+#undef NEXT
+#else
         if (*(p++) == L_ESC && p < ms->p_end)
           p++;  /* skip escapes (e.g. `%]') */
+#endif
       } while (*p != ']');
+#ifdef UTF8
+      return p+len2;
+#else
       return p+1;
+#endif
     }
     default: {
       return p;
@@ -254,16 +408,40 @@ static const char *classend (MatchState *ms, const char *p) {
 static int match_class (int c, int cl) {
   int res;
   switch (tolower(cl)) {
+#ifdef UTF8
+    case 'a' : res = c <= 0x7F && isalpha(c); break;
+#else
     case 'a' : res = isalpha(c); break;
+#endif
     case 'c' : res = iscntrl(c); break;
     case 'd' : res = isdigit(c); break;
+#ifdef UTF8
+    case 'g' : res = (c <= 0x7F ? isgraph(c) : match_class(c, 'S')); break;
+#else
     case 'g' : res = isgraph(c); break;
+#endif
     case 'l' : res = islower(c); break;
+#ifdef UTF8
+    case 'p' : res = ispunct(c) || UTF8_ISPUNCT(c); break;
+#else
     case 'p' : res = ispunct(c); break;
+#endif
+#ifdef UTF8
+    case 's' : res = isspace(c) || UTF8_ISSPACE(c); break;
+#else
     case 's' : res = isspace(c); break;
+#endif
     case 'u' : res = isupper(c); break;
+#ifdef UTF8
+    case 'w' : res = c <= 0x7F && isalnum(c); break;
+#else
     case 'w' : res = isalnum(c); break;
+#endif
+#ifdef UTF8
+    case 'x' : res = c <= 0x7F && isxdigit(c); break;
+#else
     case 'x' : res = isxdigit(c); break;
+#endif
     case 'z' : res = (c == 0); break;  /* deprecated option */
     default: return (cl == c);
   }
@@ -272,6 +450,36 @@ static int match_class (int c, int cl) {
 
 
 static int matchbracketclass (int c, const char *p, const char *ec) {
+#ifdef UTF8
+  int sig = 1;
+  if (*(p+1) == '^') {
+    sig = 0;
+    p++;  /* skip the `^' */
+  }
+  p++; /* skip the `[' */
+  while (p < ec) {
+    int len1 = UTF8_CHAR_LENGTH(*p);
+    int code1 = UTF8_DECODE(p, len1);
+    if (*p == L_ESC) {
+      p++;
+      len1 = UTF8_CHAR_LENGTH(*p);
+      code1 = UTF8_DECODE(p, len1);
+      if (match_class(c, code1)) /* TODO: check buffer over run */
+        return sig;
+    }
+    else if ((*(p+len1) == '-') && (p+(len1+1) < ec)) {
+      int len2 = UTF8_CHAR_LENGTH(*(p+(len1+1)));
+      int code2 = UTF8_DECODE(p+(len1+1), len2);
+      p+=len1+1;
+      len1 = len2;
+      if (code1 <= c && c <= code2)
+        return sig;
+    }
+    else if (code1 == c) return sig;
+    p+=len1;
+  }
+  return !sig;
+#else
   int sig = 1;
   if (*(p+1) == '^') {
     sig = 0;
@@ -291,15 +499,24 @@ static int matchbracketclass (int c, const char *p, const char *ec) {
     else if (uchar(*p) == c) return sig;
   }
   return !sig;
+#endif
 }
 
 
 static int singlematch (int c, const char *p, const char *ep) {
   switch (*p) {
     case '.': return 1;  /* matches any char */
+#ifdef UTF8
+    case L_ESC: return match_class(c, UTF8_DECODE(p+1, UTF8_CHAR_LENGTH(*(p+1))));
+#else
     case L_ESC: return match_class(c, uchar(*(p+1)));
+#endif
     case '[': return matchbracketclass(c, p, ep-1);
+#ifdef UTF8
+    default:  return (UTF8_DECODE(p, UTF8_CHAR_LENGTH(*p)) == c);
+#else
     default:  return (uchar(*p) == c);
+#endif
   }
 }
 
@@ -309,11 +526,35 @@ static const char *match (MatchState *ms, const char *s, const char *p);
 
 static const char *matchbalance (MatchState *ms, const char *s,
                                    const char *p) {
+#ifdef UTF8
+  int ss = UTF8_DECODE(s, UTF8_CHAR_LENGTH(*s));
+  int ps = UTF8_DECODE(p, UTF8_CHAR_LENGTH(*p));
+#endif
   if (p >= ms->p_end - 1)
     luaL_error(ms->L, "malformed pattern "
                       "(missing arguments to " LUA_QL("%%b") ")");
+#ifdef UTF8
+  if (ss != ps) return NULL;
+#else
   if (*s != *p) return NULL;
+#endif
   else {
+#ifdef UTF8
+    int blen = UTF8_CHAR_LENGTH(*p);
+    int b = UTF8_DECODE(p, blen);
+    int elen = UTF8_CHAR_LENGTH(p[blen]);
+    int e = UTF8_DECODE(p + blen, elen);
+    int cont = 1;
+    int len;
+    while ((s += (len = UTF8_CHAR_LENGTH(*s))) < ms->src_end) {
+      int code = UTF8_DECODE(s, len);
+      if (code == e) {
+        if (--cont == 0) return s+len;
+      }
+      else if (code == b) cont++;
+    }
+  }
+#else
     int b = *p;
     int e = *(p+1);
     int cont = 1;
@@ -324,21 +565,50 @@ static const char *matchbalance (MatchState *ms, const char *s,
       else if (*s == b) cont++;
     }
   }
+#endif
   return NULL;  /* string ends out of balance */
 }
 
 
 static const char *max_expand (MatchState *ms, const char *s,
                                  const char *p, const char *ep) {
+#ifdef UTF8
+  int i = 0;
+  int len = UTF8_CHAR_LENGTH(*s);
+  int index = 0;
+  char *memo = (char *)malloc(ms->src_end - ms->src_init + 1);
+  while ((s+i)<ms->src_end && singlematch(UTF8_DECODE(s+i, len), p, ep)) {
+    i += len;
+    memo[index++] = len;
+    len = UTF8_CHAR_LENGTH(s[i]);
+  }
+  if (s[i]) {
+    memo[index++] = len;
+  }
+#else
   ptrdiff_t i = 0;  /* counts maximum expand for item */
   while ((s+i)<ms->src_end && singlematch(uchar(*(s+i)), p, ep))
     i++;
+#endif
   /* keeps trying to match with the maximum repetitions */
   while (i>=0) {
     const char *res = match(ms, (s+i), ep+1);
+#ifdef UTF8
+    if (res) free(memo);
+#endif
     if (res) return res;
+#ifdef UTF8
+    if (index == 0) {
+      break;
+    }
+    i -= memo[--index];
+#else
     i--;  /* else didn't match; reduce 1 repetition to try again */
+#endif
   }
+#ifdef UTF8
+  free(memo);
+#endif
   return NULL;
 }
 
@@ -393,7 +663,13 @@ static const char *match_capture (MatchState *ms, const char *s, int l) {
 
 
 static const char *match (MatchState *ms, const char *s, const char *p) {
+#ifdef UTF8
+  int len;
+#endif
   init: /* using goto's to optimize tail recursion */
+#ifdef UTF8
+  len = UTF8_CHAR_LENGTH(*s);
+#endif
   if (p == ms->p_end)  /* end of pattern? */
     return s;  /* match succeeded */
   switch (*p) {
@@ -416,18 +692,42 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
         case 'b': {  /* balanced string? */
           s = matchbalance(ms, s, p+2);
           if (s == NULL) return NULL;
+#ifdef UTF8
+          {
+            int blen = UTF8_CHAR_LENGTH(p[2]);
+            int elen = UTF8_CHAR_LENGTH(p[2+blen]);
+            p+=2+blen+elen; goto init;
+          }
+#else
           p+=4; goto init;  /* else return match(ms, s, p+4); */
+#endif
         }
         case 'f': {  /* frontier? */
           const char *ep; char previous;
+#ifdef UTF8
+          const char *ep2;
+          int slen;
+          const char *previousp;
+          int previousc;
+          previous = 0; /* restraint compiler warning */
+#endif
           p += 2;
           if (*p != '[')
             luaL_error(ms->L, "missing " LUA_QL("[") " after "
                                LUA_QL("%%f") " in pattern");
           ep = classend(ms, p);  /* points to what is next */
+#ifdef UTF8
+          UTF8_PREV_CHAR_PTR(ep, ep2);
+          slen = UTF8_CHAR_LENGTH(*s);
+          previousp = (s == ms->src_init) ? NULL : (s-slen);
+          previousc = previousp == NULL ? 0 : UTF8_CHAR_LENGTH(*previousp);
+          if (matchbracketclass(previousc, p, ep2) ||
+             !matchbracketclass(UTF8_DECODE(s, slen), p, ep2)) return NULL;
+#else
           previous = (s == ms->src_init) ? '\0' : *(s-1);
           if (matchbracketclass(uchar(previous), p, ep-1) ||
              !matchbracketclass(uchar(*s), p, ep-1)) return NULL;
+#endif
           p=ep; goto init;  /* else return match(ms, s, ep); */
         }
         case '0': case '1': case '2': case '3':
@@ -442,26 +742,47 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
     }
     default: dflt: {  /* pattern class plus optional suffix */
       const char *ep = classend(ms, p);  /* points to what is next */
+#ifdef UTF8
+      int m = s < ms->src_end && singlematch(UTF8_DECODE(s, len), p, ep);
+#else
       int m = s < ms->src_end && singlematch(uchar(*s), p, ep);
+#endif
       switch (*ep) {
         case '?': {  /* optional */
           const char *res;
+#ifdef UTF8
+          int eplen = UTF8_CHAR_LENGTH(*ep);
+          if (m && ((res=match(ms, s+len, ep+eplen)) != NULL))
+#else
           if (m && ((res=match(ms, s+1, ep+1)) != NULL))
+#endif
             return res;
+#ifdef UTF8
+          p=ep+eplen; goto init;  /* else return match(ms, s, ep+eplen); */
+#else
           p=ep+1; goto init;  /* else return match(ms, s, ep+1); */
+#endif
         }
         case '*': {  /* 0 or more repetitions */
           return max_expand(ms, s, p, ep);
         }
         case '+': {  /* 1 or more repetitions */
+#ifdef UTF8
+          return (m ? max_expand(ms, s+len, p, ep) : NULL);
+#else
           return (m ? max_expand(ms, s+1, p, ep) : NULL);
+#endif
         }
         case '-': {  /* 0 or more repetitions (minimum) */
           return min_expand(ms, s, p, ep);
         }
         default: {
           if (!m) return NULL;
+#ifdef UTF8
+          s+=len; p=ep; goto init;  /* else return match(ms, s+len, ep); */
+#else
           s++; p=ep; goto init;  /* else return match(ms, s+1, ep); */
+#endif
         }
       }
     }
@@ -537,7 +858,29 @@ static int str_find_aux (lua_State *L, int find) {
   size_t ls, lp;
   const char *s = luaL_checklstring(L, 1, &ls);
   const char *p = luaL_checklstring(L, 2, &lp);
+#ifdef UTF8
+  size_t utf8ls = utf8_str_len(s, ls);
+  size_t utf8lp = utf8_str_len(p, lp);
+  size_t init = posrelat(luaL_optinteger(L, 3, 1), utf8ls);
+#else
   size_t init = posrelat(luaL_optinteger(L, 3, 1), ls);
+#endif
+#ifdef UTF8
+  int i;
+  /* `init' is updated here */
+  if (init < 1) init = 1;
+  {
+    size_t workinit = 1;
+    int j;
+    /* `init' is UTF-8 character length, so convert to byte length */
+    for (i = 0, j = 1; i < ls && j < init; j++) {
+      int len = UTF8_CHAR_LENGTH(s[i]);
+      workinit += len;
+      i += len;
+    }
+    init = workinit;
+  }
+#endif
   if (init < 1) init = 1;
   else if (init > ls + 1) {  /* start after string's end? */
     lua_pushnil(L);  /* cannot find anything */
@@ -548,8 +891,22 @@ static int str_find_aux (lua_State *L, int find) {
     /* do a plain search */
     const char *s2 = lmemfind(s + init - 1, ls - init + 1, p, lp);
     if (s2) {
+#ifdef UTF8
+      int begin = 0;
+      int end;
+      /* calcurate UTF-8 character length from top to matched position */
+      for (i = 0; i < (s2 - s);) {
+        i += UTF8_CHAR_LENGTH(s[i]);
+        begin++;
+      }
+      /* added matched position character length and pattern string length */
+      end = begin + utf8lp;
+      lua_pushinteger(L, begin + 1);
+      lua_pushinteger(L, end);
+#else
       lua_pushinteger(L, s2 - s + 1);
       lua_pushinteger(L, s2 - s + lp);
+#endif
       return 2;
     }
   }
@@ -569,14 +926,43 @@ static int str_find_aux (lua_State *L, int find) {
       ms.level = 0;
       if ((res=match(&ms, s1, p)) != NULL) {
         if (find) {
+#ifdef UTF8
+          int start = 0; /* start character index */
+          int actual = 0; /* actual byte length of to begin */
+          int end; /* end character index */
+
+          /* calcurate UTF-8 character length and byte length of matched position */
+          for (i = 0; i < (s1 - s);) {
+            int len = UTF8_CHAR_LENGTH(s[i]);
+            i += len;
+            actual += len;
+            start++;
+          }
+
+          /* calcurate character length of matched string */
+          end = start;
+          /* `res' holds pointer that is matchd string position */
+          for (i = actual; s + i < res;) {
+            i += UTF8_CHAR_LENGTH(s[i]);
+            end++;
+          }
+
+          lua_pushinteger(L, start + 1);
+          lua_pushinteger(L, end);
+#else
           lua_pushinteger(L, s1 - s + 1);  /* start */
           lua_pushinteger(L, res - s);   /* end */
+#endif
           return push_captures(&ms, NULL, 0) + 2;
         }
         else
           return push_captures(&ms, s1, res);
       }
+#ifdef UTF8
+    } while ((s1 += UTF8_CHAR_LENGTH(*s1)) < ms.src_end && !anchor);
+#else
     } while (s1++ < ms.src_end && !anchor);
+#endif
   }
   lua_pushnil(L);  /* not found */
   return 1;
@@ -719,7 +1105,17 @@ static int str_gsub (lua_State *L) {
     if (e && e>src) /* non empty match? */
       src = e;  /* skip it */
     else if (src < ms.src_end)
+#ifdef UTF8
+    {
+      int i;
+      int len = UTF8_CHAR_LENGTH(*src);
+      for (i = 0; i < len; i++) {
+        luaL_addchar(&b, *src++);
+      }
+    }
+#else
       luaL_addchar(&b, *src++);
+#endif
     else break;
     if (anchor) break;
   }

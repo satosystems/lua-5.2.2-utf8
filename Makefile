@@ -56,6 +56,7 @@ $(PLATS) clean:
 
 test:	dummy
 	src/lua -v
+	lunit-0.5/lunit tests/test.*.lua
 
 install: dummy
 	cd src && $(MKDIR) $(INSTALL_BIN) $(INSTALL_INC) $(INSTALL_LIB) $(INSTALL_MAN) $(INSTALL_LMOD) $(INSTALL_CMOD)

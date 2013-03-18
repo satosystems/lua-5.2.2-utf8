@@ -7777,6 +7777,11 @@ following the same rules of function <a href="#pdf-string.sub"><code>string.sub<
 <p>
 Numerical codes are not necessarily portable across platforms.
 
+<p class="utf8">
+UTF-8:
+Parameters <code>i</code> and <code>j</code> are not byte index,
+if your Lua is compiled with 'UTF8' compiler flag.
+There are character index.
 
 
 
@@ -7791,6 +7796,10 @@ to its corresponding argument.
 <p>
 Numerical codes are not necessarily portable across platforms.
 
+<p class="utf8">
+UTF-8:
+You can specified Unicode character code point at this function parameters,
+if your Lua is compiled with 'UTF8' compiler flag.
 
 
 
@@ -7832,6 +7841,11 @@ then in a successful match
 the captured values are also returned,
 after the two indices.
 
+<p class="utf8">
+UTF-8:
+Parameter <code>init</code> is not byte index,
+if your Lua is compiled with 'UTF8' compiler flag.
+That is character index.
 
 
 
@@ -8003,6 +8017,10 @@ The empty string <code>""</code> has length 0.
 Embedded zeros are counted,
 so <code>"a\000bc\000"</code> has length 5.
 
+<p class="utf8">
+UTF-8:
+This function returns length of characters, not length of bytes,
+if your Lua is compiled with 'UTF8' compiler flag.
 
 
 
@@ -8029,6 +8047,11 @@ A third, optional numerical argument <code>init</code> specifies
 where to start the search;
 its default value is&nbsp;1 and can be negative.
 
+<p class="utf8">
+UTF-8:
+Parameter <code>init</code> is not byte index,
+if your Lua is compiled with 'UTF8' compiler flag.
+That is character index.
 
 
 
@@ -8046,6 +8069,10 @@ The default value for <code>sep</code> is the empty string
 <hr><h3><a name="pdf-string.reverse"><code>string.reverse (s)</code></a></h3>
 Returns a string that is the string <code>s</code> reversed.
 
+<p class="utf8">
+UTF-8:
+This function reverses of the character by character, not byte by byte
+if your Lua is compiled with 'UTF8' compiler flag.
 
 
 
@@ -8073,6 +8100,11 @@ If, after these corrections,
 <code>i</code> is greater than <code>j</code>,
 the function returns the empty string.
 
+<p class="utf8">
+UTF-8:
+Parameters <code>i</code> and <code>j</code> are not byte index,
+if your Lua is compiled with 'UTF8' compiler flag.
+There are character index.
 
 
 
@@ -8102,19 +8134,33 @@ represents the character <em>x</em> itself.
 
 <li><b><code>.</code>: </b> (a dot) represents all characters.</li>
 
-<li><b><code>%a</code>: </b> represents all letters.</li>
+<li><b><code>%a</code>: </b> represents all letters.
+<div class="utf8">UTF-8: and represents all Unicode character code point of the
+character greater than 0x7f,
+if your Lua is compiled with 'UTF8' compiler flag.</div>
+</li>
 
 <li><b><code>%c</code>: </b> represents all control characters.</li>
 
 <li><b><code>%d</code>: </b> represents all digits.</li>
 
-<li><b><code>%g</code>: </b> represents all printable characters except space.</li>
+<li><b><code>%g</code>: </b> represents all printable characters except space.
+<div class="utf8">UTF-8: and represents all Unicode character code point of the
+character greater than 0x7f expect Unicode white space,
+if your Lua is compiled with 'UTF8' compiler flag.</div>
+</li>
 
 <li><b><code>%l</code>: </b> represents all lowercase letters.</li>
 
-<li><b><code>%p</code>: </b> represents all punctuation characters.</li>
+<li><b><code>%p</code>: </b> represents all punctuation characters.
+<div class="utf8">UTF-8: and represents all Unicode punct characters,
+if your Lua is compiled with 'UTF8' compiler flag.</div>
+</li>
 
-<li><b><code>%s</code>: </b> represents all space characters.</li>
+<li><b><code>%s</code>: </b> represents all space characters.
+<div class="utf8">UTF-8: and represents all Unicode white space characters,
+if your Lua is compiled with 'UTF8' compiler flag.</div>
+</li>
 
 <li><b><code>%u</code>: </b> represents all uppercase letters.</li>
 

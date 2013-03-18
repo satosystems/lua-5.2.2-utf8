@@ -22,3 +22,10 @@ p+h1, ul+h1 {
 	margin-left: -30px ;
 	background-color: #E0E0FF ;
 }
+
+.utf8 {
+	margin: 10px 10px ;
+	padding: 10px ;
+	color: #EE4444 ;
+	background-color: #DDDDDD ;
+}
