@@ -41,11 +41,23 @@
 ** Parameter `b1' is a first byte of UTF-8 character.
 ** This macro returns integer that range from 1 to 4.
 */
-#define UTF8_CHAR_LENGTH(b1)          \
-  (((unsigned char) (b1) > 0xEF) ? 4  \
-  : ((unsigned char) (b1) > 0xDF) ? 3 \
-  : ((unsigned char) (b1) > 0x7F) ? 2 \
-  : 1)
+#define UTF8_CHAR_LENGTH(b1) (                                       \
+  "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1" \
+  "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1" \
+  "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1" \
+  "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1" \
+  "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1" \
+  "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1" \
+  "\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2" \
+  "\3\3\3\3\3\3\3\3\3\3\3\3\3\3\3\3\4\4\4\4\4\4\4\4\1\1\1\1\1\1\1\1"[(unsigned char) (b1)])
+/*    There are length of RFC-2279 specification -> 5 5 5 5 6 6
+**
+** The old UTF-8 method, that was specified in RFC-2279 in January 1998,
+** converts a character code length of 1 to 6 bytes.
+** But the new UTF-8 method, that was specified in RFC-3629 in November 2003,
+** has been changed to convert a character code length of 1 to 4 bytes.
+** RFC-2279 is now abolished.
+*/
 
 /*
 ** Guess UTF-8 code length.
@@ -57,7 +69,7 @@
   : ((code) < 0x800) ? 2       \
   : ((code) < 0x10000) ? 3     \
   : ((code) < 0x200000) ? 4    \
-  : -1)
+  : 1)
 
 /*
 ** Search previous character pointer.
