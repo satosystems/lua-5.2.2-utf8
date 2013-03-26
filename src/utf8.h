@@ -50,7 +50,9 @@
   "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1" \
   "\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2\2" \
   "\3\3\3\3\3\3\3\3\3\3\3\3\3\3\3\3\4\4\4\4\4\4\4\4\1\1\1\1\1\1\1\1"[(unsigned char) (b1)])
-/*    There are length of RFC-2279 specification -> 5 5 5 5 6 6
+/*                                                  ^ ^ ^ ^ ^ ^
+**                                                  | | | | | |
+**    There are length of RFC-2279 specification -> 5 5 5 5 6 6
 **
 ** The old UTF-8 method, that was specified in RFC-2279 in January 1998,
 ** converts a character code length of 1 to 6 bytes.
@@ -112,32 +114,30 @@
 ** |   max: U+1FFFFF   |      1 11 |   11 1111 |   1111 11 |   11 1111 |    F7 |    BF |    BF |    BF |       |
 ** +-------------------+-----------+-----------+-----------+-----------+-------+-------+-------+-------+-------+
 **
-** Parameter `code' is a character code of UTF-8.
-** Parameter `len' is a length of `code'.
-** Parameter `buf' is a buffer of output.
+** Parameter `c' is a character code of UTF-8.
+** Parameter `l' is a length of `code'.
+** Parameter `b' is a buffer of output.
 */
-/* TODO: Maybe conditional branch is not needed if implementation is well. */
-#define UTF8_ENCODE(code, len, buf)                                                                                         \
-  (len == 1 ? buf[0] = code                                                                                                 \
-  : len == 2 ? (buf[0] = ((code >> 6) & 0x1F) | 0xC0, buf[1] = (code & 0x3F) | 0x80)                                        \
-  : len == 3 ? (buf[0] = ((code >> 12) & 0x0F) | 0xE0, buf[1] = ((code >> 6) & 0x3F) | 0x80, buf[2] = (code & 0x3F) | 0x80) \
-  : (buf[0] = ((code >> 18) & 0x07) | 0xF0, buf[1] = ((code >> 12) & 0x3F) | 0x80, buf[2] = ((code >> 6) & 0x3F) | 0x80, buf[3] = (code & 0x3F) | 0x80))
+#define UTF8_ENCODE(c, l, b)                                                                               \
+  (l == 1 ? b[0] = c                                                                                       \
+  : l == 2 ? (b[0] = ((c >> 6) & 0x1F) | 0xC0, b[1] = (c & 0x3F) | 0x80)                                   \
+  : l == 3 ? (b[0] = ((c >> 12) & 0x0F) | 0xE0, b[1] = ((c >> 6) & 0x3F) | 0x80, b[2] = (c & 0x3F) | 0x80) \
+  : (b[0] = ((c >> 18) & 0x07) | 0xF0, b[1] = ((c >> 12) & 0x3F) | 0x80, b[2] = ((c >> 6) & 0x3F) | 0x80, b[3] = (c & 0x3F) | 0x80))
 
-/* Helper macro for UTF8_BYTES_TO_CODE. */
-#define mask(c, n, s) ((c & ((1 << n) - 1)) << s)
+/* Helper macro for UTF8_DECODE. */
+#define _mask(c, n, s) ((c & ((1 << n) - 1)) << s)
 
 /*
 ** Convert byte array to code.
 ** Parameter `s' is a byte array of UTF-8 string.
-** Parameter `len' is a length of first UTF-8 character of `s'
+** Parameter `l' is a length of first UTF-8 character of `s'
 ** This macro returns code of first UTF-8 character of `s'
 */
-/* TODO: Maybe conditional branch is not needed if added 2 NULL terminated to tail of Lua internal string. */
-#define UTF8_DECODE(s, len)                                                  \
-  ((unsigned int) (len == 1 ? (s)[0]                                         \
-  : len == 2 ? mask((s)[0], 5, 6) | mask((s)[1], 6, 0)                       \
-  : len == 3 ? mask((s)[0], 4, 12) | mask((s)[1], 6, 6) | mask((s)[2], 6, 0) \
-  : mask((s)[0], 3, 18) | mask((s)[1], 6, 12) | mask((s)[2], 6, 6) | mask((s)[3], 6, 0)))
+#define UTF8_DECODE(s, l)                                                     \
+  ((unsigned int) (l == 1 ? (s)[0]                                            \
+  : l == 2 ? _mask((s)[0], 5, 6) | _mask((s)[1], 6, 0)                        \
+  : l == 3 ? _mask((s)[0], 4, 12) | _mask((s)[1], 6, 6) | _mask((s)[2], 6, 0) \
+  : _mask((s)[0], 3, 18) | _mask((s)[1], 6, 12) | _mask((s)[2], 6, 6) | _mask((s)[3], 6, 0)))
 
 /*
 ** This function returns true if parameter `c' is space of UTF-8,
