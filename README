@@ -4,3 +4,13 @@ This is Lua 5.2.2, released on 21 Mar 2013.
 For installation instructions, license details, and
 further information about Lua, see doc/readme.html.
 
+
+
+Modified for UTF-8 are the following:
+
+- Some functions now take character index, not byte index.
+- Some functions now return character index, not byte index.
+- Regular expressions now can use Unicode.
+
+Please looking for 'UTF-8' in doc/manual.html and looking for
+'#ifdef UTF8' in src/lstrlib.c.
