@@ -1,5 +1,5 @@
 /*
-** $Id: lstrlib.c,v 1.176 2012/05/23 15:37:09 roberto Exp $
+** $Id: lstrlib.c,v 1.178 2012/08/14 18:12:34 roberto Exp $
 ** Standard library for string operations and pattern-matching
 ** See Copyright Notice in lua.h
 */
@@ -235,7 +235,7 @@ static int str_byte (lua_State *L) {
   if (posi < 1) posi = 1;
   if (pose > l) pose = l;
   if (posi > pose) return 0;  /* empty interval; return no values */
-  n = (int)(pose -  posi + 1); /* `n' is character length, not byte length */
+  n = (int)(pose -  posi + 1);
   if (posi + n <= pose)  /* (size_t -> int) overflow? */
     return luaL_error(L, "string slice too long");
   luaL_checkstack(L, n, "string slice too long");
@@ -326,7 +326,9 @@ static int str_dump (lua_State *L) {
 #define CAP_UNFINISHED	(-1)
 #define CAP_POSITION	(-2)
 
+
 typedef struct MatchState {
+  int matchdepth;  /* control for recursive depth (to avoid C stack overflow) */
   const char *src_init;  /* init of source string */
   const char *src_end;  /* end ('\0') of source string */
   const char *p_end;  /* end ('\0') of pattern */
@@ -337,6 +339,16 @@ typedef struct MatchState {
     ptrdiff_t len;
   } capture[LUA_MAXCAPTURES];
 } MatchState;
+
+
+/* recursive function */
+static const char *match (MatchState *ms, const char *s, const char *p);
+
+
+/* maximum recursion depth for 'match' */
+#if !defined(MAXCCALLS)
+#define MAXCCALLS	200
+#endif
 
 
 #define L_ESC		'%'
@@ -503,25 +515,32 @@ static int matchbracketclass (int c, const char *p, const char *ec) {
 }
 
 
-static int singlematch (int c, const char *p, const char *ep) {
-  switch (*p) {
-    case '.': return 1;  /* matches any char */
+static int singlematch (MatchState *ms, const char *s, const char *p,
+                        const char *ep) {
+  if (s >= ms->src_end)
+    return 0;
+  else {
 #ifdef UTF8
-    case L_ESC: return match_class(c, UTF8_DECODE(p+1, UTF8_CHAR_LENGTH(*(p+1))));
+    int c = UTF8_DECODE(s, UTF8_CHAR_LENGTH(*s));
 #else
-    case L_ESC: return match_class(c, uchar(*(p+1)));
+    int c = uchar(*s);
 #endif
-    case '[': return matchbracketclass(c, p, ep-1);
+    switch (*p) {
+      case '.': return 1;  /* matches any char */
 #ifdef UTF8
-    default:  return (UTF8_DECODE(p, UTF8_CHAR_LENGTH(*p)) == c);
+      case L_ESC: return match_class(c, UTF8_DECODE(p+1, UTF8_CHAR_LENGTH(*(p+1))));
 #else
-    default:  return (uchar(*p) == c);
+      case L_ESC: return match_class(c, uchar(*(p+1)));
 #endif
+      case '[': return matchbracketclass(c, p, ep-1);
+#ifdef UTF8
+      default:  return (UTF8_DECODE(p, UTF8_CHAR_LENGTH(*p)) == c);
+#else
+      default:  return (uchar(*p) == c);
+#endif
+    }
   }
 }
-
-
-static const char *match (MatchState *ms, const char *s, const char *p);
 
 
 static const char *matchbalance (MatchState *ms, const char *s,
@@ -577,7 +596,7 @@ static const char *max_expand (MatchState *ms, const char *s,
   int len = UTF8_CHAR_LENGTH(*s);
   int index = 0;
   char *memo = (char *)malloc(ms->src_end - ms->src_init + 1);
-  while ((s+i)<ms->src_end && singlematch(UTF8_DECODE(s+i, len), p, ep)) {
+  while (singlematch(ms, s + i, p, ep)) {
     i += len;
     memo[index++] = len;
     len = UTF8_CHAR_LENGTH(s[i]);
@@ -587,7 +606,7 @@ static const char *max_expand (MatchState *ms, const char *s,
   }
 #else
   ptrdiff_t i = 0;  /* counts maximum expand for item */
-  while ((s+i)<ms->src_end && singlematch(uchar(*(s+i)), p, ep))
+  while (singlematch(ms, s + i, p, ep))
     i++;
 #endif
   /* keeps trying to match with the maximum repetitions */
@@ -619,7 +638,7 @@ static const char *min_expand (MatchState *ms, const char *s,
     const char *res = match(ms, s, ep+1);
     if (res != NULL)
       return res;
-    else if (s<ms->src_end && singlematch(uchar(*s), p, ep))
+    else if (singlematch(ms, s, p, ep))
       s++;  /* try with one more repetition */
     else return NULL;
   }
@@ -666,32 +685,36 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
 #ifdef UTF8
   int len;
 #endif
+  if (ms->matchdepth-- == 0)
+    luaL_error(ms->L, "pattern too complex");
   init: /* using goto's to optimize tail recursion */
 #ifdef UTF8
   len = UTF8_CHAR_LENGTH(*s);
 #endif
-  if (p == ms->p_end)  /* end of pattern? */
-    return s;  /* match succeeded */
-  switch (*p) {
-    case '(': {  /* start capture */
-      if (*(p+1) == ')')  /* position capture? */
-        return start_capture(ms, s, p+2, CAP_POSITION);
-      else
-        return start_capture(ms, s, p+1, CAP_UNFINISHED);
-    }
-    case ')': {  /* end capture */
-      return end_capture(ms, s, p+1);
-    }
-    case '$': {
-      if ((p+1) == ms->p_end)  /* is the `$' the last char in pattern? */
-        return (s == ms->src_end) ? s : NULL;  /* check end of string */
-      else goto dflt;
-    }
-    case L_ESC: {  /* escaped sequences not in the format class[*+?-]? */
-      switch (*(p+1)) {
-        case 'b': {  /* balanced string? */
-          s = matchbalance(ms, s, p+2);
-          if (s == NULL) return NULL;
+  if (p != ms->p_end) {  /* end of pattern? */
+    switch (*p) {
+      case '(': {  /* start capture */
+        if (*(p + 1) == ')')  /* position capture? */
+          s = start_capture(ms, s, p + 2, CAP_POSITION);
+        else
+          s = start_capture(ms, s, p + 1, CAP_UNFINISHED);
+        break;
+      }
+      case ')': {  /* end capture */
+        s = end_capture(ms, s, p + 1);
+        break;
+      }
+      case '$': {
+        if ((p + 1) != ms->p_end)  /* is the `$' the last char in pattern? */
+          goto dflt;  /* no; go to default */
+        s = (s == ms->src_end) ? s : NULL;  /* check end of string */
+        break;
+      }
+      case L_ESC: {  /* escaped sequences not in the format class[*+?-]? */
+        switch (*(p + 1)) {
+          case 'b': {  /* balanced string? */
+            s = matchbalance(ms, s, p + 2);
+            if (s != NULL) {
 #ifdef UTF8
           {
             int blen = UTF8_CHAR_LENGTH(p[2]);
@@ -699,94 +722,115 @@ static const char *match (MatchState *ms, const char *s, const char *p) {
             p+=2+blen+elen; goto init;
           }
 #else
-          p+=4; goto init;  /* else return match(ms, s, p+4); */
+              p += 4; goto init;  /* return match(ms, s, p + 4); */
 #endif
-        }
-        case 'f': {  /* frontier? */
-          const char *ep; char previous;
+
+            }  /* else fail (s == NULL) */
+            break;
+          }
+          case 'f': {  /* frontier? */
+            const char *ep; char previous;
 #ifdef UTF8
-          const char *ep2;
-          int slen;
-          const char *previousp;
-          int previousc;
-          previous = 0; /* restraint compiler warning */
+            const char *ep2;
+            int slen;
+            const char *previousp;
+            int previousc;
+            previous = 0; /* restraint compiler warning */
 #endif
-          p += 2;
-          if (*p != '[')
-            luaL_error(ms->L, "missing " LUA_QL("[") " after "
-                               LUA_QL("%%f") " in pattern");
-          ep = classend(ms, p);  /* points to what is next */
+            p += 2;
+            if (*p != '[')
+              luaL_error(ms->L, "missing " LUA_QL("[") " after "
+                                 LUA_QL("%%f") " in pattern");
+            ep = classend(ms, p);  /* points to what is next */
 #ifdef UTF8
-          UTF8_PREV_CHAR_PTR(ep, ep2);
-          slen = UTF8_CHAR_LENGTH(*s);
-          previousp = (s == ms->src_init) ? NULL : (s-slen);
-          previousc = previousp == NULL ? 0 : UTF8_CHAR_LENGTH(*previousp);
-          if (matchbracketclass(previousc, p, ep2) ||
-             !matchbracketclass(UTF8_DECODE(s, slen), p, ep2)) return NULL;
+            UTF8_PREV_CHAR_PTR(ep, ep2);
+            slen = UTF8_CHAR_LENGTH(*s);
+            previousp = (s == ms->src_init) ? NULL : (s-slen);
+            previousc = previousp == NULL ? 0 : UTF8_CHAR_LENGTH(*previousp);
+            if (!matchbracketclass(previousc, p, ep2) &&
+                matchbracketclass(UTF8_DECODE(s, slen), p, ep2)) {
+              p = ep; goto init;  /* return match(ms, s, ep); */
+            }
 #else
-          previous = (s == ms->src_init) ? '\0' : *(s-1);
-          if (matchbracketclass(uchar(previous), p, ep-1) ||
-             !matchbracketclass(uchar(*s), p, ep-1)) return NULL;
+            previous = (s == ms->src_init) ? '\0' : *(s - 1);
+            if (!matchbracketclass(uchar(previous), p, ep - 1) &&
+               matchbracketclass(uchar(*s), p, ep - 1)) {
+              p = ep; goto init;  /* return match(ms, s, ep); */
+            }
 #endif
-          p=ep; goto init;  /* else return match(ms, s, ep); */
+            s = NULL;  /* match failed */
+            break;
+          }
+          case '0': case '1': case '2': case '3':
+          case '4': case '5': case '6': case '7':
+          case '8': case '9': {  /* capture results (%0-%9)? */
+            s = match_capture(ms, s, uchar(*(p + 1)));
+            if (s != NULL) {
+              p += 2; goto init;  /* return match(ms, s, p + 2) */
+            }
+            break;
+          }
+          default: goto dflt;
         }
-        case '0': case '1': case '2': case '3':
-        case '4': case '5': case '6': case '7':
-        case '8': case '9': {  /* capture results (%0-%9)? */
-          s = match_capture(ms, s, uchar(*(p+1)));
-          if (s == NULL) return NULL;
-          p+=2; goto init;  /* else return match(ms, s, p+2) */
-        }
-        default: goto dflt;
+        break;
       }
-    }
-    default: dflt: {  /* pattern class plus optional suffix */
-      const char *ep = classend(ms, p);  /* points to what is next */
-#ifdef UTF8
-      int m = s < ms->src_end && singlematch(UTF8_DECODE(s, len), p, ep);
-#else
-      int m = s < ms->src_end && singlematch(uchar(*s), p, ep);
-#endif
-      switch (*ep) {
-        case '?': {  /* optional */
-          const char *res;
-#ifdef UTF8
-          int eplen = UTF8_CHAR_LENGTH(*ep);
-          if (m && ((res=match(ms, s+len, ep+eplen)) != NULL))
-#else
-          if (m && ((res=match(ms, s+1, ep+1)) != NULL))
-#endif
-            return res;
-#ifdef UTF8
-          p=ep+eplen; goto init;  /* else return match(ms, s, ep+eplen); */
-#else
-          p=ep+1; goto init;  /* else return match(ms, s, ep+1); */
-#endif
+      default: dflt: {  /* pattern class plus optional suffix */
+        const char *ep = classend(ms, p);  /* points to optional suffix */
+        /* does not match at least once? */
+        if (!singlematch(ms, s, p, ep)) {
+          if (*ep == '*' || *ep == '?' || *ep == '-') {  /* accept empty? */
+            p = ep + 1; goto init;  /* return match(ms, s, ep + 1); */
+          }
+          else  /* '+' or no suffix */
+            s = NULL;  /* fail */
         }
-        case '*': {  /* 0 or more repetitions */
-          return max_expand(ms, s, p, ep);
-        }
-        case '+': {  /* 1 or more repetitions */
+        else {  /* matched once */
+          switch (*ep) {  /* handle optional suffix */
+            case '?': {  /* optional */
+              const char *res;
 #ifdef UTF8
-          return (m ? max_expand(ms, s+len, p, ep) : NULL);
+              int eplen = UTF8_CHAR_LENGTH(*ep);
+              if ((res = match(ms, s + len, ep + eplen)) != NULL)
 #else
-          return (m ? max_expand(ms, s+1, p, ep) : NULL);
+              if ((res = match(ms, s + 1, ep + 1)) != NULL)
 #endif
-        }
-        case '-': {  /* 0 or more repetitions (minimum) */
-          return min_expand(ms, s, p, ep);
-        }
-        default: {
-          if (!m) return NULL;
+                s = res;
+              else {
 #ifdef UTF8
-          s+=len; p=ep; goto init;  /* else return match(ms, s+len, ep); */
+                p = ep + eplen; goto init;  /* else return match(ms, s, ep + eplen); */
 #else
-          s++; p=ep; goto init;  /* else return match(ms, s+1, ep); */
+                p = ep + 1; goto init;  /* else return match(ms, s, ep + 1); */
 #endif
+              }
+              break;
+            }
+            case '+':  /* 1 or more repetitions */
+#ifdef UTF8
+              s += len;  /* 1 match already done */
+#else
+              s++;  /* 1 match already done */
+#endif
+              /* go through */
+            case '*':  /* 0 or more repetitions */
+              s = max_expand(ms, s, p, ep);
+              break;
+            case '-':  /* 0 or more repetitions (minimum) */
+              s = min_expand(ms, s, p, ep);
+              break;
+            default:  /* no suffix */
+#ifdef UTF8
+              s += len; p = ep; goto init;  /* return match(ms, s + len, ep); */
+#else
+              s++; p = ep; goto init;  /* return match(ms, s + 1, ep); */
+#endif
+          }
         }
+        break;
       }
     }
   }
+  ms->matchdepth++;
+  return s;
 }
 
 
@@ -918,12 +962,14 @@ static int str_find_aux (lua_State *L, int find) {
       p++; lp--;  /* skip anchor character */
     }
     ms.L = L;
+    ms.matchdepth = MAXCCALLS;
     ms.src_init = s;
     ms.src_end = s + ls;
     ms.p_end = p + lp;
     do {
       const char *res;
       ms.level = 0;
+      lua_assert(ms.matchdepth == MAXCCALLS);
       if ((res=match(&ms, s1, p)) != NULL) {
         if (find) {
 #ifdef UTF8
@@ -986,6 +1032,7 @@ static int gmatch_aux (lua_State *L) {
   const char *p = lua_tolstring(L, lua_upvalueindex(2), &lp);
   const char *src;
   ms.L = L;
+  ms.matchdepth = MAXCCALLS;
   ms.src_init = s;
   ms.src_end = s+ls;
   ms.p_end = p + lp;
@@ -994,6 +1041,7 @@ static int gmatch_aux (lua_State *L) {
        src++) {
     const char *e;
     ms.level = 0;
+    lua_assert(ms.matchdepth == MAXCCALLS);
     if ((e = match(&ms, src, p)) != NULL) {
       lua_Integer newstart = e-s;
       if (e == src) newstart++;  /* empty match? go at least one position */
@@ -1091,12 +1139,14 @@ static int str_gsub (lua_State *L) {
     p++; lp--;  /* skip anchor character */
   }
   ms.L = L;
+  ms.matchdepth = MAXCCALLS;
   ms.src_init = src;
   ms.src_end = src+srcl;
   ms.p_end = p + lp;
   while (n < max_s) {
     const char *e;
     ms.level = 0;
+    lua_assert(ms.matchdepth == MAXCCALLS);
     e = match(&ms, src, p);
     if (e) {
       n++;
@@ -1263,7 +1313,7 @@ static int str_format (lua_State *L) {
           nb = sprintf(buff, form, luaL_checkint(L, arg));
           break;
         }
-        case 'd':  case 'i': {
+        case 'd': case 'i': {
           lua_Number n = luaL_checknumber(L, arg);
           LUA_INTFRM_T ni = (LUA_INTFRM_T)n;
           lua_Number diff = n - (lua_Number)ni;
@@ -1273,7 +1323,7 @@ static int str_format (lua_State *L) {
           nb = sprintf(buff, form, ni);
           break;
         }
-        case 'o':  case 'u':  case 'x':  case 'X': {
+        case 'o': case 'u': case 'x': case 'X': {
           lua_Number n = luaL_checknumber(L, arg);
           unsigned LUA_INTFRM_T ni = (unsigned LUA_INTFRM_T)n;
           lua_Number diff = n - (lua_Number)ni;
@@ -1283,7 +1333,7 @@ static int str_format (lua_State *L) {
           nb = sprintf(buff, form, ni);
           break;
         }
-        case 'e':  case 'E': case 'f':
+        case 'e': case 'E': case 'f':
 #if defined(LUA_USE_AFORMAT)
         case 'a': case 'A':
 #endif
